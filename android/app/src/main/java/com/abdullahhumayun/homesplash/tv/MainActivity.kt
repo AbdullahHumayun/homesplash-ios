@@ -12,6 +12,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
+import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -34,15 +35,21 @@ import android.widget.Toast
  *  MENU / SETTINGS key, or hold OK for ~1s  → change the server address and theme
  *  YELLOW key                                 → cycle theme: dark → light → auto
  *  BACK twice                                 → exit
- *  Loses the connection                       → shows a notice and retries every 15s
+ *  Loses the connection                       → keeps showing the last screen and retries
+ *
+ * Reloads are double-buffered: the new page loads in a hidden second WebView and only replaces
+ * the visible one (with a short cross-fade) once the dashboard reports real content — so a
+ * reload, theme change or server update never flashes a blank or loading screen.
  */
 class MainActivity : Activity() {
 
-    private lateinit var web: WebView
+    private lateinit var root: FrameLayout
     private lateinit var notice: TextView
+    private var front: WebView? = null      // on screen
+    private var back: WebView? = null       // loading behind it
+    private var loadToken = 0               // identifies the newest load; older ones are ignored
     private val handler = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
-    private var failed = false
     private var lastBack = 0L
     private var dialogOpen = false
     private val retry = Runnable { load() }
@@ -51,8 +58,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        web = buildWebView()
+        root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         notice = TextView(this).apply {
             setTextColor(Color.rgb(236, 230, 220))
             textSize = 22f
@@ -60,7 +66,6 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.argb(235, 11, 11, 15))
             setPadding(80, 80, 80, 80)
         }
-        root.addView(web, FrameLayout.LayoutParams(-1, -1))
         root.addView(notice, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
         hideSystemUi()
@@ -68,9 +73,15 @@ class MainActivity : Activity() {
         if (serverUrl().isEmpty()) showSetup() else load()
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun buildWebView() = WebView(this).apply {
-        setBackgroundColor(Color.BLACK)
+    /** JS bridge: the dashboard calls HomesplashTV.ready() once its data is on screen. */
+    private inner class Bridge(private val token: Int) {
+        @JavascriptInterface fun ready() { handler.post { promote(token) } }
+        @JavascriptInterface fun reload() { handler.post { load() } }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
+    private fun buildWebView(token: Int) = WebView(this).apply {
+        setBackgroundColor(Color.TRANSPARENT)
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
         isFocusable = true
@@ -81,28 +92,33 @@ class MainActivity : Activity() {
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = true
         settings.cacheMode = WebSettings.LOAD_DEFAULT
+        addJavascriptInterface(Bridge(token), "HomesplashTV")
         webViewClient = object : WebViewClient() {
-            override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
-                failed = false
-            }
+            private var failed = false
 
             override fun onPageFinished(view: WebView, url: String?) {
-                if (!failed) notice.visibility = View.GONE
+                // Fallback if the page never calls ready() (e.g. the data API is slow):
+                // promote anyway after a few seconds, as long as the page itself loaded.
+                if (!failed) handler.postDelayed({ promote(token) }, 6_000)
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) fail("${error.description}")
+                if (request.isForMainFrame) { failed = true; fail(token, "${error.description}") }
             }
 
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
-                if (request.isForMainFrame && response.statusCode >= 500) fail("HTTP ${response.statusCode}")
+                if (request.isForMainFrame && response.statusCode >= 500) {
+                    failed = true; fail(token, "HTTP ${response.statusCode}")
+                }
             }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = false
 
-            // The WebView renderer crashed or was killed for memory: start over cleanly.
+            // A renderer crashed or was killed for memory: drop that view and load a fresh one.
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                recreate()
+                discard(view)
+                if (view === front) { front = null; load() }
+                if (view === back) back = null
                 return true
             }
         }
@@ -120,25 +136,58 @@ class MainActivity : Activity() {
         return base + (if ('?' in base) "&" else "/?") + "theme=" + t
     }
 
+    /** Load the dashboard into a hidden WebView; it replaces the visible one once it's ready. */
     private fun load() {
         handler.removeCallbacks(retry)
         val url = serverUrl()
         if (url.isEmpty()) return showSetup()
-        showOverlay("Homesplash\n\nConnecting to $url …")
-        web.loadUrl(pageUrl())
-        web.requestFocus()
+        if (front == null) showOverlay("Homesplash\n\nConnecting to $url …")
+        back?.let { discard(it) }
+        val token = ++loadToken
+        val view = buildWebView(token).apply { alpha = 0f }
+        // stack: [front] [back (transparent, rendering)] [notice]
+        root.addView(view, root.indexOfChild(notice), FrameLayout.LayoutParams(-1, -1))
+        back = view
+        view.loadUrl(pageUrl())
     }
 
-    private fun fail(reason: String) {
-        failed = true
-        showOverlay("Can't reach ${serverUrl()}\n($reason)\n\nRetrying in 15 seconds.\nPress MENU or hold OK to change the server.")
+    /** Cross-fade the freshly loaded view in and retire the old one. */
+    private fun promote(token: Int) {
+        val incoming = back ?: return
+        if (token != loadToken) return
+        back = null
+        val outgoing = front
+        front = incoming
+        notice.visibility = View.GONE
+        incoming.requestFocus()
+        incoming.animate().alpha(1f).setDuration(350).withEndAction {
+            outgoing?.let { discard(it) }
+        }.start()
+    }
+
+    private fun fail(token: Int, reason: String) {
+        if (token != loadToken) return
+        back?.let { discard(it) }
+        back = null
         handler.removeCallbacks(retry)
         handler.postDelayed(retry, 15_000)
+        // Something is already on screen: keep showing it and retry quietly.
+        if (front != null) return
+        showOverlay("Can't reach ${serverUrl()}\n($reason)\n\nRetrying in 15 seconds.\nPress MENU or hold OK to change the server.")
+    }
+
+    private fun discard(view: WebView) {
+        view.animate().cancel()
+        root.removeView(view)
+        view.stopLoading()
+        view.loadUrl("about:blank")
+        view.destroy()
     }
 
     private fun showOverlay(text: String) {
         notice.text = text
         notice.visibility = View.VISIBLE
+        notice.bringToFront()
     }
 
     private fun showSetup() {
@@ -248,18 +297,21 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        web.onResume()
-        web.resumeTimers()
+        front?.onResume()
+        back?.onResume()
+        front?.resumeTimers()
     }
 
     override fun onPause() {
-        web.onPause()
+        front?.onPause()
+        back?.onPause()
         super.onPause()
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        web.destroy()
+        front?.let { discard(it) }
+        back?.let { discard(it) }
         super.onDestroy()
     }
 
