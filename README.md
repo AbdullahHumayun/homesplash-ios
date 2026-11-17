@@ -63,6 +63,7 @@ xcodegen generate && open Homesplash.xcodeproj
 - **Setup:** on first launch, enter the server address, e.g. `http://192.168.1.20:8080`.
 - **Change the server:** press **MENU**, or hold **OK** for about 1 s.
 - **Reload:** press **green** (or rewind).
+- **Theme:** press **yellow** to cycle Dark → Light → Auto (light by day, dark at night), or pick one in the setup dialog. "Theme from server config" uses `display.theme`.
 - **Exit:** press **BACK** twice.
 
 **Opening on power-on:** on Android 10+ the TV only lets an app open itself at boot with the "Display over other apps" permission. Sony TVs hide that setting, so grant it once over adb:

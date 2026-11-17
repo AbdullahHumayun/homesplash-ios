@@ -23,13 +23,16 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
 
 /**
  * Full-screen kiosk browser for the Homesplash dashboard on Android TV.
  *
- *  MENU / SETTINGS key, or hold OK for ~1s  → change the server address
+ *  MENU / SETTINGS key, or hold OK for ~1s  → change the server address and theme
+ *  YELLOW key                                 → cycle theme: dark → light → auto
  *  BACK twice                                 → exit
  *  Loses the connection                       → shows a notice and retries every 15s
  */
@@ -107,12 +110,22 @@ class MainActivity : Activity() {
 
     private fun serverUrl() = prefs.getString(KEY_URL, "") ?: ""
 
+    /** "" = use display.theme from the server's config; otherwise dark / light / auto. */
+    private fun theme() = prefs.getString(KEY_THEME, "") ?: ""
+
+    private fun pageUrl(): String {
+        val base = serverUrl()
+        val t = theme()
+        if (base.isEmpty() || t.isEmpty()) return base
+        return base + (if ('?' in base) "&" else "/?") + "theme=" + t
+    }
+
     private fun load() {
         handler.removeCallbacks(retry)
         val url = serverUrl()
         if (url.isEmpty()) return showSetup()
         showOverlay("Homesplash\n\nConnecting to $url …")
-        web.loadUrl(url)
+        web.loadUrl(pageUrl())
         web.requestFocus()
     }
 
@@ -142,11 +155,28 @@ class MainActivity : Activity() {
             text = "Open Homesplash when the TV turns on"
             isChecked = prefs.getBoolean(KEY_BOOT, true)
         }
+        val themes = listOf("" to "Theme from server config", "dark" to "Dark", "light" to "Light",
+                            "auto" to "Auto — light by day, dark at night")
+        val themeGroup = RadioGroup(this).apply {
+            themes.forEachIndexed { i, (value, label) ->
+                addView(RadioButton(this@MainActivity).apply {
+                    id = 1000 + i
+                    text = label
+                    isChecked = theme() == value
+                })
+            }
+        }
+        val themeLabel = TextView(this).apply {
+            text = "Theme"
+            setPadding(0, pad / 2, 0, 0)
+        }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad / 2, pad, 0)
             addView(input)
             addView(boot)
+            addView(themeLabel)
+            addView(themeGroup)
         }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Homesplash server")
@@ -156,6 +186,7 @@ class MainActivity : Activity() {
                 prefs.edit()
                     .putString(KEY_URL, normalise(input.text.toString()))
                     .putBoolean(KEY_BOOT, boot.isChecked)
+                    .putString(KEY_THEME, themes.getOrNull(themeGroup.checkedRadioButtonId - 1000)?.first ?: theme())
                     .apply()
                 load()
             }
@@ -182,6 +213,12 @@ class MainActivity : Activity() {
                     if (event.repeatCount == 15) { showSetup(); return true }  // held ~1s
                 }
                 KeyEvent.KEYCODE_PROG_GREEN, KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                    load(); return true
+                }
+                KeyEvent.KEYCODE_PROG_YELLOW -> {
+                    val next = when (theme()) { "dark" -> "light"; "light" -> "auto"; else -> "dark" }
+                    prefs.edit().putString(KEY_THEME, next).apply()
+                    Toast.makeText(this, "Theme: " + next.replaceFirstChar { it.uppercase() }, Toast.LENGTH_SHORT).show()
                     load(); return true
                 }
                 KeyEvent.KEYCODE_BACK -> {
@@ -230,6 +267,7 @@ class MainActivity : Activity() {
         const val PREFS = "homesplash"
         const val KEY_URL = "url"
         const val KEY_BOOT = "start_on_boot"
+        const val KEY_THEME = "theme"
         private const val HELP = "Homesplash\n\nPress MENU (or hold OK) to set the server address."
     }
 }
