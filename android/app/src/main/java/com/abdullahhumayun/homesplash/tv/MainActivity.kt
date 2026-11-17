@@ -36,7 +36,7 @@ import android.widget.Toast
 class MainActivity : Activity() {
 
     private lateinit var web: WebView
-    private lateinit var overlay: TextView
+    private lateinit var notice: TextView
     private val handler = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
     private var failed = false
@@ -50,7 +50,7 @@ class MainActivity : Activity() {
 
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         web = buildWebView()
-        overlay = TextView(this).apply {
+        notice = TextView(this).apply {
             setTextColor(Color.rgb(236, 230, 220))
             textSize = 22f
             gravity = Gravity.CENTER
@@ -58,7 +58,7 @@ class MainActivity : Activity() {
             setPadding(80, 80, 80, 80)
         }
         root.addView(web, FrameLayout.LayoutParams(-1, -1))
-        root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+        root.addView(notice, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
         hideSystemUi()
 
@@ -84,7 +84,7 @@ class MainActivity : Activity() {
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
-                if (!failed) overlay.visibility = View.GONE
+                if (!failed) notice.visibility = View.GONE
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -124,8 +124,8 @@ class MainActivity : Activity() {
     }
 
     private fun showOverlay(text: String) {
-        overlay.text = text
-        overlay.visibility = View.VISIBLE
+        notice.text = text
+        notice.visibility = View.VISIBLE
     }
 
     private fun showSetup() {
