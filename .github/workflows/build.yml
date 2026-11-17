@@ -1,0 +1,63 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to publish the IPA on the "latest" release
+
+concurrency:
+  group: ipa
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        run: |
+          xcodebuild -project Homesplash.xcodeproj -scheme Homesplash -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build > build.log 2>&1 || {
+              echo "::group::Errors"; grep -E "error:" build.log | sort -u | head -60; echo "::endgroup::"
+              tail -40 build.log; exit 1; }
+          grep -E "warning:" build.log | sort -u | head -30 || true
+
+      - name: Package IPA
+        run: |
+          APP=build/Build/Products/Release-iphoneos/Homesplash.app
+          # Ad-hoc sign so the HealthKit entitlements are embedded; Signulous re-signs with
+          # its own certificate and keeps them.
+          codesign --force --sign - --timestamp=none \
+            --entitlements Homesplash/Homesplash.entitlements "$APP"
+          codesign -d --entitlements - "$APP"
+          rm -rf Payload && mkdir Payload && cp -R "$APP" Payload/
+          zip -qry Homesplash-unsigned.ipa Payload
+          ls -lh Homesplash-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Homesplash-unsigned-ipa
+          path: Homesplash-unsigned.ipa
+
+      - name: Publish to the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest Homesplash-unsigned.ipa --prerelease \
+            --title "Latest build ($(git rev-parse --short HEAD))" \
+            --notes "Unsigned IPA built from ${GITHUB_SHA}. Sign it with Signulous (or any signing service) before installing."
