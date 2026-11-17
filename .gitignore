@@ -4,3 +4,10 @@ Payload/
 *.ipa
 build.log
 .DS_Store
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.p12
+*.jks

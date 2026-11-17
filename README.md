@@ -1,4 +1,8 @@
-# Homesplash for iPhone
+# Homesplash apps
+
+Companion apps for the Homesplash TV dashboard: an **iPhone app** that pushes Apple Health data, and an **Android TV app** that shows the dashboard full-screen.
+
+## iPhone (Apple Health sync)
 
 A small companion app for the Homesplash TV dashboard. It reads Apple Health on your iPhone and pushes a summary to your Homesplash server over your home network.
 
@@ -34,3 +38,37 @@ brew install xcodegen
 ```bash
 xcodegen generate && open Homesplash.xcodeproj
 ```
+
+## Android TV (dashboard viewer)
+
+`android/` is a full-screen kiosk browser for the dashboard. It's a plain WebView with no other dependencies, and it:
+- keeps the screen awake;
+- shows a "can't reach the server" notice and retries every 15 s when the connection drops;
+- reloads itself when the dashboard updates;
+- can open by itself when the TV turns on.
+
+**Get it:** every push to `android/` builds a signed APK on the [`android-latest` release](../../releases/tag/android-latest) (`Homesplash-TV.apk`).
+
+**Install on the TV**, either way:
+- **Downloader app:** install *Downloader* (by AFTVnews) from the Play Store, allow it to install unknown apps, and enter the APK's release URL.
+- **adb:** turn on Developer options → USB/Network debugging on the TV, then:
+  ```bash
+  adb connect <tv-ip>
+  ```
+  ```bash
+  adb install -r Homesplash-TV.apk
+  ```
+
+**Use it:**
+- **Setup:** on first launch, enter the server address, e.g. `http://192.168.1.20:8080`.
+- **Change the server:** press **MENU**, or hold **OK** for about 1 s.
+- **Reload:** press **green** (or rewind).
+- **Exit:** press **BACK** twice.
+
+**Opening on power-on:** on Android 10+ the TV only lets an app open itself at boot with the "Display over other apps" permission. Sony TVs hide that setting, so grant it once over adb:
+
+```bash
+adb shell appops set com.abdullahhumayun.homesplash.tv SYSTEM_ALERT_WINDOW allow
+```
+
+**Signing:** CI signs with the key in the `ANDROID_KEYSTORE_B64` / `ANDROID_KEYSTORE_PASSWORD` repo secrets, so every build installs over the last one. Without those secrets it falls back to a throwaway debug key. You then have to uninstall before each update.
